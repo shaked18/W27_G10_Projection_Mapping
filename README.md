@@ -1,6 +1,7 @@
-## XXXXX Project by :  
+## Projection Mapping Project by : Shiraz Shmulman, Matan Gerstman, Shaked Adi
   
 ## Details about the project
+This project uses a projector and a camera to create interactive experiences that connect the physical and digital worlds in real-time. It features a mixed-reality version of the classic game Breakout, where physical items become part of the game. Additionally, the system includes a smart pen that converts physical drawing actions into live digital projections.
  
 ## Folder description :
 * ESP32: source code for the esp side (firmware).
