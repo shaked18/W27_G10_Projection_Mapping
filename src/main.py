@@ -1,8 +1,10 @@
-"""Live, low-latency view of what the camera sees, shown on the computer screen.
+"""Snake on the projector + live camera view on the computer screen.
 
-The projector is not driven by this program: it simply shows the computer's
-screen (macOS display mirroring or an extended desktop). The camera is pointed
-at the projected area; this window lets you see exactly what it captures.
+Two windows:
+  * "Projector" - the Snake game, fullscreen on the projector. Set the
+    projector as an extended display (System Settings > Displays, NOT mirror).
+  * "Camera"    - what the camera sees, with the detected borders of the
+    projected area outlined.
 
 Run:   python src/main.py                 (camera 0)
        python src/main.py --list-cameras  (find the Arducam UC-724 index)
@@ -10,14 +12,17 @@ Run:   python src/main.py                 (camera 0)
 
 The UI outlines the borders of the projected area that the camera detects
 (see projection_area.py). For best detection, dim the room and project a
-bright image, then press 'l' to lock the area.
+bright image (press 'w'), then press 'l' to lock the area.
 
-Keys:
+Keys (work in either window):
+  arrows   steer the snake          space  pause      Enter / n  new game
+  w  white screen on the projector (helps detection)
+  p  toggle projector fullscreen
   d  toggle projection-area detection
   l  lock / unlock the detected area
   o  dim everything outside the projected area
   r  reset detection
-  f  toggle fullscreen
+  f  toggle camera-window fullscreen
   h  toggle HUD (fps / latency)
   s  save a snapshot
   q / Esc  quit
@@ -34,9 +39,19 @@ import cv2
 import numpy as np
 
 from camera import CameraStream, list_cameras
+from displays import ProjectorWindow, find_projector
 from projection_area import ProjectionAreaDetector
+from snake import DOWN, LEFT, RIGHT, UP, SnakeGame
 
 WINDOW = "Camera"
+PROJECTOR_WINDOW = "Projector"
+
+# cv2.waitKeyEx arrow-key codes differ per OS (macOS, Linux/GTK, Windows).
+ARROWS = {
+    63232: UP, 63233: DOWN, 63234: LEFT, 63235: RIGHT,
+    65362: UP, 65364: DOWN, 65361: LEFT, 65363: RIGHT,
+    2490368: UP, 2621440: DOWN, 2424832: LEFT, 2555904: RIGHT,
+}
 ROOT = Path(__file__).resolve().parent
 
 
@@ -53,6 +68,10 @@ def parse_args() -> argparse.Namespace:
                    help="requested camera resolution WxH (default 1280x720)")
     p.add_argument("--fps", type=int, default=60, help="requested camera FPS")
     p.add_argument("--no-mjpg", action="store_true", help="don't request MJPG from the camera")
+    p.add_argument("--projector-size", type=parse_size, default=None,
+                   help="projector resolution WxH (default: detected, else 1280x720)")
+    p.add_argument("--projector-pos", type=parse_size, default=None, metavar="XxY",
+                   help="top-left of the projector display in desktop coords, e.g. 1512x0")
     return p.parse_args()
 
 
@@ -72,6 +91,24 @@ class App:
         self.detector = ProjectionAreaDetector()
         self.detect_on = True
         self.dim_outside = False
+
+        screen = find_projector()
+        if args.projector_pos is not None:
+            from displays import Screen
+            size = args.projector_size or (1280, 720)
+            screen = Screen(*args.projector_pos, *size, False)
+        proj_size = args.projector_size or ((screen.width, screen.height) if screen else (1280, 720))
+        if screen is None:
+            print("Projector display not detected: drag the 'Projector' window onto it and press 'p'.")
+        self.projector = ProjectorWindow(PROJECTOR_WINDOW, screen, proj_size)
+        self.game = SnakeGame(*proj_size)
+        self.white = False
+        self.white_img = np.full((proj_size[1], proj_size[0], 3), 255, np.uint8)
+        self.redraw_game = True
+
+    def show_projector(self) -> None:
+        self.projector.show(self.white_img if self.white else self.game.render())
+        self.redraw_game = False
 
     def render(self, frame: np.ndarray) -> np.ndarray:
         if self.detect_on:
@@ -105,11 +142,24 @@ class App:
             cv2.putText(img, line, (12, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
             y += 24
 
-    def handle_key(self, key: int) -> bool:
+    def handle_key(self, code: int) -> bool:
         """Returns False to quit."""
+        if code in ARROWS:
+            self.game.turn(ARROWS[code])
+            return True
+        key = code & 0xFF
         if key in (ord("q"), 27):
             return False
-        if key == ord("d"):
+        self.redraw_game = True
+        if key == ord(" "):
+            self.game.toggle_pause()
+        elif key in (13, 10, ord("n")):
+            self.game.reset()
+        elif key == ord("w"):
+            self.white = not self.white
+        elif key == ord("p"):
+            self.projector.toggle_fullscreen()
+        elif key == ord("d"):
             self.detect_on = not self.detect_on
         elif key == ord("l"):
             if self.detector.corners is not None:
@@ -137,7 +187,11 @@ class App:
         last_t = time.perf_counter()
         try:
             while self.cam.running:
-                f = self.cam.wait_newer(last_seq, timeout=0.03)
+                if self.game.update() or self.redraw_game:
+                    self.show_projector()
+
+                # Short timeout so the game keeps ticking even if the camera is slow.
+                f = self.cam.wait_newer(last_seq, timeout=0.005)
                 if f is not None:
                     last_seq = f.seq
                     self.frame = f.image
@@ -152,8 +206,8 @@ class App:
                     if dt > 0:
                         self.render_fps = 0.9 * self.render_fps + 0.1 / dt if self.render_fps else 1 / dt
 
-                key = cv2.waitKey(1) & 0xFF
-                if key != 255 and not self.handle_key(key):
+                code = cv2.waitKeyEx(1)
+                if code != -1 and not self.handle_key(code):
                     break
                 if cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
                     break
