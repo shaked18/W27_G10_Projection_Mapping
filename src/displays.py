@@ -3,15 +3,22 @@
 The projector must be an *extended* display (System Settings > Displays, not
 "Mirror"), otherwise it can only ever show a copy of the laptop screen.
 
-On macOS (with pyobjc-framework-Cocoa installed) the game window is made
-borderless and placed exactly over the projector's screen, above the menu bar,
-so the projector shows only the game. OpenCV's own fullscreen is not used for
-this on macOS because it goes to whichever screen has keyboard focus.
+Displays are found with built-in OS APIs (no extra packages on Windows/Linux):
+  * Windows: EnumDisplayMonitors via ctypes (process made DPI-aware so the
+    coordinates are real pixels even with 125%/150% display scaling)
+  * Linux:   xrandr --listmonitors
+  * macOS:   AppKit (pip install pyobjc-framework-Cocoa)
+
+Windows/Linux: the game window is moved onto the projector and made fullscreen
+(OpenCV fullscreens on the monitor the window is on). macOS: the window is made
+borderless and placed exactly over the projector's screen above the menu bar,
+because OpenCV's fullscreen there goes to whichever screen has keyboard focus.
 """
 
 from __future__ import annotations
 
 import platform
+import re
 import subprocess
 from dataclasses import dataclass, field
 from typing import Any
@@ -20,6 +27,26 @@ import cv2
 import numpy as np
 
 IS_MAC = platform.system() == "Darwin"
+IS_WINDOWS = platform.system() == "Windows"
+
+
+def _make_dpi_aware() -> None:
+    """Windows: use real pixel coordinates for windows and monitors.
+
+    Must run before any window is created, so it runs at import time.
+    """
+    import ctypes
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)   # per-monitor DPI aware
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+
+if IS_WINDOWS:
+    _make_dpi_aware()
 
 
 @dataclass
@@ -43,6 +70,51 @@ def _detect_macos() -> list[Screen]:
         # Cocoa has a bottom-left origin; convert to top-left.
         out.append(Screen(int(f.origin.x), int(main_h - (f.origin.y + f.size.height)),
                           int(f.size.width), int(f.size.height), i == 0, s))
+    return out
+
+
+def _detect_windows() -> list[Screen]:
+    import ctypes
+    from ctypes import wintypes
+
+    class MONITORINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                    ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+
+    user32 = ctypes.windll.user32
+    out: list[Screen] = []
+    proc_type = ctypes.WINFUNCTYPE(ctypes.c_int, wintypes.HMONITOR, wintypes.HDC,
+                                   ctypes.POINTER(wintypes.RECT), wintypes.LPARAM)
+
+    def callback(hmon, hdc, rect, lparam):
+        info = MONITORINFO()
+        info.cbSize = ctypes.sizeof(MONITORINFO)
+        user32.GetMonitorInfoW(hmon, ctypes.byref(info))
+        r = info.rcMonitor
+        out.append(Screen(r.left, r.top, r.right - r.left, r.bottom - r.top,
+                          bool(info.dwFlags & 1)))   # MONITORINFOF_PRIMARY
+        return 1
+
+    user32.EnumDisplayMonitors(None, None, proc_type(callback), 0)
+    if not out:
+        raise RuntimeError("no monitors")
+    return out
+
+
+def _detect_xrandr() -> list[Screen]:
+    # Lines look like: " 1: +HDMI-1 1280/700x720/390+1920+0  HDMI-1"
+    text = subprocess.run(["xrandr", "--listmonitors"], capture_output=True,
+                          text=True, timeout=5, check=True).stdout
+    out = []
+    for line in text.splitlines()[1:]:
+        m = re.search(r"(\d+)/\d+x(\d+)/\d+\+(-?\d+)\+(-?\d+)", line)
+        if m:
+            w, h, x, y = map(int, m.groups())
+            out.append(Screen(x, y, w, h, "*" in line.split()[1]))
+    if not out:
+        raise RuntimeError("no monitors")
+    if not any(s.primary for s in out):
+        out[0].primary = True
     return out
 
 
@@ -70,7 +142,12 @@ def find_projector() -> Screen | None:
     Prints why when it cannot be found, since that is the usual reason the
     projector ends up showing the whole desktop instead of only the game.
     """
-    detectors = [_detect_macos] if IS_MAC else []
+    if IS_MAC:
+        detectors = [_detect_macos]
+    elif IS_WINDOWS:
+        detectors = [_detect_windows]
+    else:
+        detectors = [_detect_xrandr]
     detectors.append(_detect_screeninfo)
     screens: list[Screen] = []
     for detect in detectors:
@@ -81,7 +158,7 @@ def find_projector() -> Screen | None:
             continue
     else:
         pkg = "pyobjc-framework-Cocoa" if IS_MAC else "screeninfo"
-        print(f"Can't list displays: run  pip install {pkg}  (or pass --projector-pos).")
+        print(f"Can't list displays: run  pip install {pkg}  (or pass --projector-pos XxY).")
         return None
 
     for s in screens:
@@ -96,7 +173,7 @@ def find_projector() -> Screen | None:
                   "projector > 'Use as: Extended display'.")
         else:
             print("Only one display found - is the projector connected?")
-    elif platform.system() == "Windows":
+    elif IS_WINDOWS:
         print("Only one display found. If the projector is connected it is DUPLICATING the "
               "screen.\n  Fix: press Win+P and choose 'Extend', then restart this app.")
     else:

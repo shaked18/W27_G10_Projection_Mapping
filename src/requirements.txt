@@ -2,4 +2,4 @@ opencv-python>=4.8
 numpy>=1.24
 # Puts the game exactly on the projector display
 pyobjc-framework-Cocoa; sys_platform == "darwin"
-screeninfo; sys_platform != "darwin"
+screeninfo; sys_platform != "darwin"  # fallback only
