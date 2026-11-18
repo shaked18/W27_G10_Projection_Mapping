@@ -39,7 +39,7 @@ import cv2
 import numpy as np
 
 from camera import CameraStream, list_cameras
-from displays import ProjectorWindow, find_projector
+from displays import ProjectorWindow, find_projector, mirroring_on
 from projection_area import ProjectionAreaDetector
 from snake import DOWN, LEFT, RIGHT, UP, SnakeGame
 
@@ -99,7 +99,14 @@ class App:
             screen = Screen(*args.projector_pos, *size, False)
         proj_size = args.projector_size or ((screen.width, screen.height) if screen else (1280, 720))
         if screen is None:
-            print("Projector display not detected: drag the 'Projector' window onto it and press 'p'.")
+            if mirroring_on():
+                print("WARNING: the projector is MIRRORING the laptop screen, so it shows the whole "
+                      "screen.\n  Fix: System Settings > Displays > select the projector > "
+                      "'Use as: Extended display', then restart this app.")
+            else:
+                print("Projector display not detected: drag the 'Projector' window onto it and press 'p'.")
+        else:
+            print(f"Projector: {screen.width}x{screen.height} at ({screen.x},{screen.y}) - game goes fullscreen there")
         self.projector = ProjectorWindow(PROJECTOR_WINDOW, screen, proj_size)
         self.game = SnakeGame(*proj_size)
         self.white = False
