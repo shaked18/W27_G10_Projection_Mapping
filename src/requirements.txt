@@ -1,0 +1,5 @@
+opencv-python>=4.8
+numpy>=1.24
+# Optional: auto-detect which display is the projector
+pyobjc-framework-Cocoa; sys_platform == "darwin"
+screeninfo; sys_platform != "darwin"
