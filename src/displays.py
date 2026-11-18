@@ -65,19 +65,44 @@ def mirroring_on() -> bool:
 
 
 def find_projector() -> Screen | None:
-    """The projector is assumed to be the first non-primary display, if detectable."""
+    """The projector is assumed to be the first non-primary display.
+
+    Prints why when it cannot be found, since that is the usual reason the
+    projector ends up showing the whole desktop instead of only the game.
+    """
     detectors = [_detect_macos] if IS_MAC else []
     detectors.append(_detect_screeninfo)
+    screens: list[Screen] = []
     for detect in detectors:
         try:
             screens = detect()
+            break
         except Exception:
             continue
-        for s in screens:
-            if not s.primary:
-                return s
-        if screens:
-            return None
+    else:
+        pkg = "pyobjc-framework-Cocoa" if IS_MAC else "screeninfo"
+        print(f"Can't list displays: run  pip install {pkg}  (or pass --projector-pos).")
+        return None
+
+    for s in screens:
+        print(f"display: {s.width}x{s.height} at ({s.x},{s.y})" + (" [main]" if s.primary else ""))
+    for s in screens:
+        if not s.primary:
+            return s
+
+    if IS_MAC:
+        if mirroring_on():
+            print("The projector MIRRORS the screen. Fix: System Settings > Displays > "
+                  "projector > 'Use as: Extended display'.")
+        else:
+            print("Only one display found - is the projector connected?")
+    elif platform.system() == "Windows":
+        print("Only one display found. If the projector is connected it is DUPLICATING the "
+              "screen.\n  Fix: press Win+P and choose 'Extend', then restart this app.")
+    else:
+        print("Only one display found. If the projector is connected it is mirroring the "
+              "screen.\n  Fix: in Display settings turn off 'Mirror displays' (or run "
+              "xrandr --output <projector> --right-of <laptop>), then restart this app.")
     return None
 
 
